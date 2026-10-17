@@ -1,0 +1,74 @@
+# ---------------------------------------------------------------- Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+
+# ------------------------------------------------------------ 虚拟环境
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# ------------------------------------------------------------- 构建产物
+build/
+dist/
+out/
+*.egg-info/
+.eggs/
+wheels/
+*.spec
+
+# ------------------------------------------- 本地打包工具（不纳入仓库）
+# 这些只在制作安装包时用到，运行源码与使用应用都不需要
+installer/
+tools/build.py
+tools/build_installer.py
+tools/verify_build.py
+tools/verify_icon.py
+tools/encode_bats.py
+打包.bat
+打包安装包.bat
+
+# -------------------------------------------------------- 测试与覆盖率
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.ruff_cache/
+.mypy_cache/
+.dmypy.json
+
+# ------------------------------------------------------------ 应用数据
+*.db
+*.db-journal
+*.sqlite3
+*.log
+
+# 批处理脚本的临时探测文件（TEMP 不可用时产生）
+xb-todo-python.txt
+xb-todo-python.txt.ver
+
+# --------------------------------------------------------------- 编辑器
+.idea/
+.vscode/*
+!.vscode/settings.json.example
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+
+# --------------------------------------------------------------- 系统
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+
+.workbuddy/

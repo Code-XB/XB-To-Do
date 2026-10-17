@@ -1,0 +1,9 @@
+# 开发依赖（终端用户不需要）
+#   pip install -r requirements-dev.txt
+-r requirements.txt
+
+# 代码规范
+ruff>=0.6
+
+# 图标处理（生成/检查 .ico 多尺寸）
+pillow>=10.0

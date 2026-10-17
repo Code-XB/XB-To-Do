@@ -1,0 +1,45 @@
+[project]
+name = "xb-to-do"
+version = "1.0.0"
+description = "基于 PySide6 的桌面待办清单：待办块、优先级、分类、到期提醒与亮暗主题"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "CodeXB" }]
+keywords = ["todo", "task", "pyside6", "qt", "desktop", "checklist"]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Environment :: Win32 (MS Windows)",
+  "Intended Audience :: End Users/Desktop",
+  "Natural Language :: Chinese (Simplified)",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Office/Business :: Scheduling",
+  "Typing :: Typed",
+]
+dependencies = ["PySide6>=6.5"]
+
+[project.optional-dependencies]
+# 开发所需（源码运行时不需要）
+dev = ["ruff>=0.6"]
+
+[project.gui-scripts]
+xb-to-do = "main:main"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = ["build", "*.dist", "tools/shots"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 12 12">
+  <!-- 上箭头（浅色主题，用于日历年份微调框） -->
+  <path d="M2.6 7.6 L6 4.2 L9.4 7.6"
+        fill="none" stroke="#6b7186" stroke-width="1.7"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
