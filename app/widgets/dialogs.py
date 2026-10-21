@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..i18n import t
 from ..theme import asset_url, themed_asset
 
 
@@ -79,7 +80,7 @@ class CardDialog(QDialog):
             close_btn.setFixedSize(28, 28)
             close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             close_btn.setIcon(QIcon(themed_asset("close")))
-            close_btn.setToolTip("关闭")
+            close_btn.setToolTip(t("关闭"))
             close_btn.clicked.connect(self.reject)
             header.addWidget(close_btn, 0, Qt.AlignmentFlag.AlignTop)
 
@@ -157,6 +158,7 @@ class MessageDialog(CardDialog):
         "error": "alert_error",
     }
     DEFAULT_OK = {"info": "知道了", "warning": "知道了", "question": "确定", "error": "知道了"}
+    # 翻译在使用处通过 t() 进行
 
     def __init__(
         self,
@@ -203,7 +205,7 @@ class MessageDialog(CardDialog):
         self.body.addLayout(content)
 
         row, ok_btn, cancel_btn = self.button_row(
-            cancel_text, ok_text or self.DEFAULT_OK.get(kind, "确定"), danger
+            cancel_text, t(ok_text or self.DEFAULT_OK.get(kind, "确定")), danger
         )
         ok_btn.clicked.connect(self.accept)
         if cancel_btn:
@@ -220,13 +222,14 @@ class MessageDialog(CardDialog):
         parent: QWidget | None,
         title: str,
         text: str = "",
-        ok_text: str = "确定",
-        cancel_text: str = "取消",
+        ok_text: str = "",
+        cancel_text: str = "",
         danger: bool = False,
     ) -> bool:
         """返回用户是否点了确认按钮。"""
         dialog = cls(parent, title, text, kind="question",
-                     ok_text=ok_text, cancel_text=cancel_text, danger=danger)
+                     ok_text=ok_text or t("确定"), cancel_text=cancel_text or t("取消"),
+                     danger=danger)
         return dialog.exec() == QDialog.DialogCode.Accepted
 
     @classmethod
@@ -248,11 +251,11 @@ class InputDialog(CardDialog):
     def __init__(
         self,
         parent: QWidget | None = None,
-        title: str = "输入",
+        title: str = "",
         label: str = "",
         text: str = "",
         placeholder: str = "",
-        ok_text: str = "保存",
+        ok_text: str = "",
     ) -> None:
         super().__init__(parent, width=400, title=title)
 
@@ -266,7 +269,7 @@ class InputDialog(CardDialog):
         self.edit.setMinimumWidth(320)
         self.body.addWidget(self.edit)
 
-        row, ok_btn, cancel_btn = self.button_row("取消", ok_text)
+        row, ok_btn, cancel_btn = self.button_row(t("取消"), t(ok_text or "保存"))
         ok_btn.clicked.connect(self._on_accept)
         cancel_btn.clicked.connect(self.reject)
         self.body.addLayout(row)
@@ -277,7 +280,7 @@ class InputDialog(CardDialog):
 
     def _on_accept(self) -> None:
         if not self.edit.text().strip():
-            self.edit.setPlaceholderText("⚠ 内容不能为空")
+            self.edit.setPlaceholderText(t("⚠ 内容不能为空"))
             self.edit.setFocus()
             return
         self.accept()

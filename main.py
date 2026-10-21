@@ -21,6 +21,7 @@ from PySide6.QtGui import QFont, QIcon
 from PySide6.QtWidgets import QApplication
 
 from app import __app_name__, __version__
+from app import app_settings, i18n
 from app.database import TaskRepository
 from app.main_window import MainWindow
 from app.models import ChecklistItem, Priority, Task
@@ -127,10 +128,10 @@ def build_application() -> QApplication:
     )
     _set_app_user_model_id()
     app = QApplication(sys.argv)
-    app.setApplicationName(__app_name__)
-    app.setOrganizationName(ORGANIZATION)
+    app.setApplicationName(app_settings.APP_NAME)
+    app.setOrganizationName(app_settings.ORGANIZATION)
     # 与主窗口标题保持完全一致：两者不同时 Qt 会把 displayName 拼到标题后面
-    app.setApplicationDisplayName(f"{__app_name__} 待办清单")
+    app.setApplicationDisplayName(i18n.t("{name} 待办清单", name=__app_name__))
     app.setApplicationVersion(__version__)
     app.setFont(QFont("Microsoft YaHei UI", 10))
 
@@ -142,28 +143,37 @@ def build_application() -> QApplication:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="XB-To-Do 待办清单")
-    parser.add_argument("--demo", action="store_true", help="首次运行时写入示例任务")
-    parser.add_argument("--db", default=None, help="自定义数据库文件路径")
-    parser.add_argument("--theme", choices=["dark", "light"], default=None, help="强制指定主题")
+    parser = argparse.ArgumentParser(description=i18n.t("XB-To-Do 待办清单"))
+    parser.add_argument("--demo", action="store_true", help=i18n.t("首次运行时写入示例任务"))
+    parser.add_argument("--db", default=None, help=i18n.t("自定义数据库文件路径"))
+    parser.add_argument(
+        "--theme", choices=["dark", "light"], default=None, help=i18n.t("强制指定主题")
+    )
+    parser.add_argument(
+        "--lang", default=None, help=i18n.t("界面语言，如 zh_CN / en_US")
+    )
     parser.add_argument(
         "--version",
         action="version",
         version=f"{__app_name__} {__version__}",
-        help="打印版本号后退出",
+        help=i18n.t("打印版本号后退出"),
     )
     args = parser.parse_args()
 
-    app = build_application()
     _migrate_settings()
+
+    # 语言要在任何 UI 文案生成之前就绪（注意：argparse 的 help 已先于此，
+    # 因此 --lang 主要供脚本探测使用；交互界面语言以设置为准）
+    i18n.set_language(args.lang or app_settings.get_value("language"))
+
+    app = build_application()
 
     db_path = resolve_db_path(args.db)
     repo = TaskRepository(db_path)
     if args.demo:
         seed_demo(repo)
 
-    settings = QSettings(ORGANIZATION, __app_name__)
-    theme = args.theme or settings.value("theme", "dark")
+    theme = args.theme or app_settings.get_value("theme")
 
     window = MainWindow(repo, theme=theme)
     window.show()

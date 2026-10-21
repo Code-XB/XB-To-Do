@@ -21,9 +21,26 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..models import DEFAULT_CATEGORIES, ChecklistItem, Priority, Task
+from .. import app_settings
+from ..i18n import t
+from ..models import (
+    DEFAULT_CATEGORIES,
+    DEFAULT_CATEGORY,
+    ChecklistItem,
+    Priority,
+    Task,
+)
 from ..theme import themed_asset
 from .dialogs import CardDialog
+
+# 中→英固定日期别名（parse_natural_date 在任何界面语言下都接受英文输入）
+_EN_DAY_WORDS: dict[str, tuple[str, ...]] = {
+    "今天": ("today",),
+    "今日": ("today",),
+    "明天": ("tomorrow",),
+    "明日": ("tomorrow",),
+    "后天": ("day after tomorrow",),
+}
 
 
 def field_label(text: str) -> QLabel:
@@ -35,7 +52,7 @@ def field_label(text: str) -> QLabel:
 
 def _category_choices(categories: list[str]) -> list[str]:
     seen: list[str] = []
-    for name in [*categories, *DEFAULT_CATEGORIES, "默认"]:
+    for name in [*categories, *DEFAULT_CATEGORIES, DEFAULT_CATEGORY]:
         if name and name not in seen:
             seen.append(name)
     return seen
@@ -47,7 +64,7 @@ class _PriorityCategoryRow:
     def __init__(self, categories: list[str]) -> None:
         self.prio_combo = QComboBox()
         for p in (Priority.HIGH, Priority.MEDIUM, Priority.LOW):
-            self.prio_combo.addItem(f"{p.label}优先", int(p))
+            self.prio_combo.addItem(t("{label}优先", label=p.label), int(p))
 
         self.cat_combo = QComboBox()
         self.cat_combo.setEditable(True)
@@ -59,13 +76,13 @@ class _PriorityCategoryRow:
 
         left = QVBoxLayout()
         left.setSpacing(7)
-        left.addWidget(field_label("优先级"))
+        left.addWidget(field_label(t("优先级")))
         left.addWidget(self.prio_combo)
         row.addLayout(left, 1)
 
         right = QVBoxLayout()
         right.setSpacing(7)
-        right.addWidget(field_label("分类"))
+        right.addWidget(field_label(t("分类")))
         right.addWidget(self.cat_combo)
         row.addLayout(right, 1)
 
@@ -73,12 +90,15 @@ class _PriorityCategoryRow:
 
     def load(self, task: Optional[Task]) -> None:
         if task is None:
-            self.prio_combo.setCurrentIndex(1)  # 默认「中」
+            # 新建：使用设置里配置的默认优先级 / 默认分类
+            idx = self.prio_combo.findData(app_settings.get_value("default_priority"))
+            self.prio_combo.setCurrentIndex(idx if idx >= 0 else 1)
+            self.cat_combo.setCurrentText(app_settings.get_value("default_category"))
             return
         idx = self.prio_combo.findData(int(task.priority))
         if idx >= 0:
             self.prio_combo.setCurrentIndex(idx)
-        self.cat_combo.setCurrentText(task.category or "默认")
+        self.cat_combo.setCurrentText(task.category or DEFAULT_CATEGORY)
 
     @property
     def priority(self) -> Priority:
@@ -86,14 +106,14 @@ class _PriorityCategoryRow:
 
     @property
     def category(self) -> str:
-        return self.cat_combo.currentText().strip() or "默认"
+        return self.cat_combo.currentText().strip() or DEFAULT_CATEGORY
 
 
 class _DueRow:
     """到期日：勾选启用 + 日期选择。"""
 
     def __init__(self) -> None:
-        self.check = QCheckBox("设置到期日")
+        self.check = QCheckBox(t("设置到期日"))
         self.check.setCursor(Qt.CursorShape.PointingHandCursor)
         self.edit = QDateEdit()
         self.edit.setCalendarPopup(True)
@@ -107,9 +127,21 @@ class _DueRow:
         layout.addWidget(self.edit)
 
     def load(self, task: Optional[Task]) -> None:
-        if task and task.due_date:
-            self.check.setChecked(True)
-            self.edit.setDate(QDate.fromString(task.due_date, "yyyy-MM-dd"))
+        if task:
+            if task.due_date:
+                self.check.setChecked(True)
+                self.edit.setDate(QDate.fromString(task.due_date, "yyyy-MM-dd"))
+            return
+        # 新建：应用「默认到期日」设置
+        mode = app_settings.get_value("default_due")
+        if mode != "none":
+            offset = {"today": 0, "tomorrow": 1, "day3": 3}.get(mode)
+            if offset is not None:
+                from datetime import date as _date, timedelta as _td
+
+                self.check.setChecked(True)
+                qd = QDate(_date.today() + _td(days=offset))
+                self.edit.setDate(qd)
 
     @property
     def value(self) -> Optional[str]:
@@ -127,18 +159,18 @@ class TaskDialog(CardDialog):
         task: Optional[Task] = None,
         categories: Optional[list[str]] = None,
     ) -> None:
-        super().__init__(parent, width=470, title="编辑任务" if task else "新建任务")
+        super().__init__(parent, width=470, title=t("编辑任务") if task else t("新建任务"))
         self._original = task
         self.result_task: Optional[Task] = None
 
-        self.body.addWidget(field_label("任务标题"))
+        self.body.addWidget(field_label(t("任务标题")))
         self.title_edit = QLineEdit()
-        self.title_edit.setPlaceholderText("要做什么？")
+        self.title_edit.setPlaceholderText(t("要做什么？"))
         self.body.addWidget(self.title_edit)
 
-        self.body.addWidget(field_label("备注（可选）"))
+        self.body.addWidget(field_label(t("备注（可选）")))
         self.note_edit = QTextEdit()
-        self.note_edit.setPlaceholderText("补充说明、子步骤、链接…")
+        self.note_edit.setPlaceholderText(t("补充说明、子步骤、链接…"))
         self.note_edit.setFixedHeight(78)
         self.note_edit.setObjectName("NoteEdit")
         self.body.addWidget(self.note_edit)
@@ -150,7 +182,7 @@ class TaskDialog(CardDialog):
         self.due.build(self.body)
 
         self.body.addSpacing(2)
-        row, ok_btn, cancel_btn = self.button_row("取消", "保存")
+        row, ok_btn, cancel_btn = self.button_row(t("取消"), t("保存"))
         ok_btn.clicked.connect(self._on_save)
         cancel_btn.clicked.connect(self.reject)
         self.body.addLayout(row)
@@ -166,7 +198,7 @@ class TaskDialog(CardDialog):
     def _on_save(self) -> None:
         title = self.title_edit.text().strip()
         if not title:
-            self.title_edit.setPlaceholderText("⚠ 标题不能为空")
+            self.title_edit.setPlaceholderText(t("⚠ 标题不能为空"))
             self.title_edit.setFocus()
             return
 
@@ -201,7 +233,7 @@ class _ItemRow:
         lay.setSpacing(8)
 
         self.edit = QLineEdit(text)
-        self.edit.setPlaceholderText("子待办内容…")
+        self.edit.setPlaceholderText(t("子待办内容…"))
         lay.addWidget(self.edit, 1)
 
         remove = QPushButton()
@@ -209,7 +241,7 @@ class _ItemRow:
         remove.setFixedSize(28, 28)
         remove.setIcon(QIcon(themed_asset("close")))
         remove.setCursor(Qt.CursorShape.PointingHandCursor)
-        remove.setToolTip("移除这一条")
+        remove.setToolTip(t("移除这一条"))
         remove.clicked.connect(lambda: on_remove(self))
         lay.addWidget(remove)
 
@@ -234,17 +266,17 @@ class BlockDialog(CardDialog):
         task: Optional[Task] = None,
         categories: Optional[list[str]] = None,
     ) -> None:
-        super().__init__(parent, width=520, title="编辑待办块" if task else "新建待办块")
+        super().__init__(parent, width=520, title=t("编辑待办块") if task else t("新建待办块"))
         self._original = task
         self.result_task: Optional[Task] = None
         self._rows: list[_ItemRow] = []
 
-        self.body.addWidget(field_label("块标题"))
+        self.body.addWidget(field_label(t("块标题")))
         self.title_edit = QLineEdit()
-        self.title_edit.setPlaceholderText("例如：上线前检查清单")
+        self.title_edit.setPlaceholderText(t("例如：上线前检查清单"))
         self.body.addWidget(self.title_edit)
 
-        self.body.addWidget(field_label("待办事项（可添加多条）"))
+        self.body.addWidget(field_label(t("待办事项（可添加多条）")))
         self.items_host = QWidget()
         self.items_layout = QVBoxLayout(self.items_host)
         self.items_layout.setContentsMargins(0, 0, 6, 0)
@@ -257,7 +289,7 @@ class BlockDialog(CardDialog):
         self.items_scroll.setWidget(self.items_host)
         self.body.addWidget(self.items_scroll)
 
-        self.add_btn = QPushButton("＋  添加一条待办事项")
+        self.add_btn = QPushButton(t("＋  添加一条待办事项"))
         self.add_btn.setObjectName("LinkButton")
         self.add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.add_btn.clicked.connect(lambda: self._add_row(""))
@@ -270,7 +302,7 @@ class BlockDialog(CardDialog):
         self.due.build(self.body)
 
         self.body.addSpacing(2)
-        row, ok_btn, cancel_btn = self.button_row("取消", "保存")
+        row, ok_btn, cancel_btn = self.button_row(t("取消"), t("保存"))
         ok_btn.clicked.connect(self._on_save)
         cancel_btn.clicked.connect(self.reject)
         self.body.addLayout(row)
@@ -332,7 +364,7 @@ class BlockDialog(CardDialog):
         title = self.title_edit.text().strip()
 
         if not title and not items:
-            self.title_edit.setPlaceholderText("⚠ 请填写块标题，或至少添加一条待办事项")
+            self.title_edit.setPlaceholderText(t("⚠ 请填写块标题，或至少添加一条待办事项"))
             self.title_edit.setFocus()
             return
         if not title:
@@ -362,23 +394,34 @@ class BlockDialog(CardDialog):
 def parse_natural_date(text: str) -> Optional[str]:
     """从快速输入中解析简易自然语言日期，如「今天/明天/周五/10-20」。
 
-    返回 ``YYYY-MM-DD`` 或 None。
+    当前界面语言为英文时，同样接受 ``today`` / ``tomorrow`` / ``next monday``
+    等译文变体。返回 ``YYYY-MM-DD`` 或 None。
     """
-    t = text.strip().replace(" ", "")
-    if not t:
+    raw = text.strip().replace(" ", "")
+    if not raw:
         return None
     today = date.today()
+    low = raw.lower()
 
-    aliases = {"今天": 0, "今日": 0, "明天": 1, "明日": 1, "后天": 2, "大后天": 3}
-    for word, offset in aliases.items():
-        if word in t:
+    def hit(word: str) -> bool:
+        """目标词是否出现在输入中（含翻译变体与固定英文别名，忽略大小写）。"""
+        variants = {word.lower(), t(word).lower()}
+        variants.update(_EN_DAY_WORDS.get(word.lower(), ()))
+        return any(v and v in low for v in variants)
+
+    # 固定英文别名：无论界面语言如何，today / tomorrow 都可用
+    for word, offset in (("今天", 0), ("今日", 0), ("明天", 1), ("明日", 1),
+                         ("后天", 2), ("大后天", 3)):
+        if hit(word):
             return (today + timedelta(days=offset)).isoformat()
 
-    weekdays = {"一": 0, "二": 1, "三": 2, "四": 3, "五": 4, "六": 5, "日": 6, "天": 6}
+    weekdays = {"一": 0, "二": 1, "三": 2, "四": 3, "五": 4,
+                "六": 5, "日": 6, "天": 6}
     for word, target in weekdays.items():
         for prefix in ("下下周", "下周", "本周", "这周", "周", "星期", "礼拜"):
             key = f"{prefix}{word}"
-            if key in t:
+            variants = {key.lower(), t(key).lower()}
+            if any(v and v in low for v in variants):
                 base = today + timedelta(days=(target - today.weekday()) % 7)
                 if key.startswith("下下周"):
                     base += timedelta(days=14)
@@ -388,8 +431,26 @@ def parse_natural_date(text: str) -> Optional[str]:
                     base += timedelta(days=7)
                 return base.isoformat()
 
+    # 英文星期与 next 前缀（翻译键 "周一" -> "Monday" 等）
+    en_weekdays = [("monday", 0), ("tuesday", 1), ("wednesday", 2), ("thursday", 3),
+                   ("friday", 4), ("saturday", 5), ("sunday", 6)]
+    en_abbr = {"mon": 0, "tue": 1, "tues": 1, "wed": 2, "thu": 3, "thur": 3,
+               "thurs": 3, "fri": 4, "sat": 5, "sun": 6}
+    for name, target in en_weekdays:
+        if name in low:
+            base = today + timedelta(days=(target - today.weekday()) % 7)
+            if base == today or ("next " + name) in low:
+                base += timedelta(days=7 if base == today else 0)
+            return base.isoformat()
+    for abbr, target in en_abbr.items():
+        if len(low) <= 5 and abbr == low:
+            base = today + timedelta(days=(target - today.weekday()) % 7)
+            if base == today:
+                base += timedelta(days=7)
+            return base.isoformat()
+
     # 绝对日期：2026-10-20 / 10/20 / 10月20日
-    normalized = t.replace("/", "-").replace("月", "-").replace("日", "").strip("-")
+    normalized = raw.replace("/", "-").replace("月", "-").replace("日", "").strip("-")
     parts = [p for p in normalized.split("-") if p]
     try:
         if len(parts) == 3:

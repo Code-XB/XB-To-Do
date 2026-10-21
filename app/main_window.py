@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import QSettings, Qt
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -19,36 +19,57 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from . import app_settings
 from .database import FILTERS, TaskRepository
-from .models import Priority, Task
+from .i18n import current_language, filter_label, set_language, t
+from .models import DEFAULT_CATEGORY, Priority, Task
 from .theme import asset_url, build_qss, set_current_theme
 from .widgets.common import Toast
 from .widgets.dialogs import InputDialog, MessageDialog
 from .widgets.sidebar import Sidebar
+from .widgets.settings_dialog import SettingsDialog
 from .widgets.task_dialog import BlockDialog, TaskDialog, parse_natural_date
 from .widgets.task_item import TaskItem
 
-PRIORITY_TOKENS = {
+# 快速输入的优先级标记：!高 / !h / !3（高）、!中 / !m / !2（中）、!低 / !l / !1（低）
+_BASE_PRIORITY_TOKENS = {
     "高": Priority.HIGH, "h": Priority.HIGH, "3": Priority.HIGH,
     "中": Priority.MEDIUM, "m": Priority.MEDIUM, "2": Priority.MEDIUM,
     "低": Priority.LOW, "l": Priority.LOW, "1": Priority.LOW,
 }
 
 
-def parse_quick_input(text: str) -> tuple[str, Priority, str, Optional[str]]:
+def _priority_tokens() -> dict[str, Priority]:
+    """当前语言下的优先级标记表（译文与缩写同时可用）。"""
+    tokens: dict[str, Priority] = dict(_BASE_PRIORITY_TOKENS)
+    for word, p in (("高", Priority.HIGH), ("中", Priority.MEDIUM), ("低", Priority.LOW)):
+        translated = t(word).lower()
+        if translated and translated != word:
+            tokens[translated] = p
+    return tokens
+
+
+def parse_quick_input(
+    text: str,
+    default_priority: Optional[Priority] = None,
+    default_category: Optional[str] = None,
+) -> tuple[str, Priority, str, Optional[str]]:
     """解析快速输入语法。
 
     支持 ``!高`` 优先级、``#工作`` 分类、``@明天`` 到期日（@ 后接自然语言日期）。
+    未指定时使用传入的默认值（来自设置里的「新任务默认值」；到期日仅在
+    完整新建对话框中应用，快速添加保持「不设日期」的直觉）。
     返回 ``(标题, 优先级, 分类, 到期日)``。
     """
-    priority = Priority.MEDIUM
-    category = "默认"
+    priority = default_priority if default_priority is not None else Priority.MEDIUM
+    category = default_category or DEFAULT_CATEGORY
     due: Optional[str] = None
     words: list[str] = []
+    tokens = _priority_tokens()
 
     for token in text.split():
         if token.startswith("!") and len(token) > 1:
-            priority = PRIORITY_TOKENS.get(token[1:].lower(), priority)
+            priority = tokens.get(token[1:].lower(), priority)
         elif token.startswith("#") and len(token) > 1:
             category = token[1:]
         elif token.startswith("@") and len(token) > 1:
@@ -68,23 +89,31 @@ class MainWindow(QWidget):
         super().__init__()
         self.repo = repo
         self.theme = theme
-        self.filter_key = "all"
+        self.filter_key = self._startup_view()
         self.search_text = ""
         self._cards: list[TaskItem] = []
         self._expanded_blocks: set[int] = set()   # 展开中的待办块 id
         self._focus_sub_input: Optional[int] = None  # 重建后需要重新聚焦的子项输入框
-        self._settings = QSettings("CodeXB", "XB-To-Do")
+        self._replaced = False  # 语言切换重建时为 True：关闭时不释放共享资源
+        self._settings = app_settings.settings()
 
         self.setObjectName("Root")
-        self.setWindowTitle("XB-To-Do 待办清单")
+        self.setWindowTitle(t("XB-To-Do 待办清单"))
         self.resize(1080, 720)
         self.setMinimumSize(860, 560)
 
         self._build_ui()
         self._bind_shortcuts()
+        self.sidebar.set_current(self.filter_key)
         self.apply_theme(self.theme)
         self.refresh()
         self._restore_geometry()
+
+    @staticmethod
+    def _startup_view() -> str:
+        """设置里配置的启动视图；无效值回退到「全部任务」。"""
+        view = app_settings.get_value("startup_view")
+        return view if view in FILTERS else "all"
 
     # ================= 界面搭建 =================
 
@@ -98,6 +127,7 @@ class MainWindow(QWidget):
         self.sidebar.selection_changed.connect(self._on_filter_changed)
         self.sidebar.clear_completed.connect(self._on_clear_completed)
         self.sidebar.theme_toggled.connect(self._toggle_theme)
+        self.sidebar.settings_requested.connect(self.open_settings)
         root.addWidget(self.sidebar)
 
         # 右侧内容列
@@ -133,7 +163,7 @@ class MainWindow(QWidget):
 
         titles = QVBoxLayout()
         titles.setSpacing(2)
-        self.page_title = QLabel("全部任务")
+        self.page_title = QLabel(filter_label(self.filter_key))
         self.page_title.setObjectName("PageTitle")
         self.page_subtitle = QLabel()
         self.page_subtitle.setObjectName("PageSubtitle")
@@ -144,20 +174,20 @@ class MainWindow(QWidget):
 
         self.search_edit = QLineEdit()
         self.search_edit.setObjectName("SearchBox")
-        self.search_edit.setPlaceholderText("🔍  搜索任务…")
+        self.search_edit.setPlaceholderText(t("🔍  搜索任务…"))
         self.search_edit.setClearButtonEnabled(True)
         self.search_edit.textChanged.connect(self._on_search)
         header.addWidget(self.search_edit)
 
-        block_btn = QPushButton("  待办块")
+        block_btn = QPushButton(t("  待办块"))
         block_btn.setObjectName("Ghost")
         block_btn.setIcon(QIcon(asset_url("block.svg")))
         block_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        block_btn.setToolTip("新建待办块：一个块里可以放多条待办事项")
+        block_btn.setToolTip(t("新建待办块：一个块里可以放多条待办事项"))
         block_btn.clicked.connect(self._on_new_block)
         header.addWidget(block_btn)
 
-        new_btn = QPushButton("＋  新建任务")
+        new_btn = QPushButton(t("＋  新建任务"))
         new_btn.setObjectName("Primary")
         new_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         new_btn.clicked.connect(self._on_new_task)
@@ -175,12 +205,12 @@ class MainWindow(QWidget):
         self.quick_edit = QLineEdit()
         self.quick_edit.setObjectName("QuickInput")
         self.quick_edit.setPlaceholderText(
-            "添加任务… 支持  !高  #工作  @明天"
+            t("添加任务… 支持  !高  #工作  @明天")
         )
         self.quick_edit.returnPressed.connect(self._on_quick_add)
         lay.addWidget(self.quick_edit, 1)
 
-        add_btn = QPushButton("添加")
+        add_btn = QPushButton(t("添加"))
         add_btn.setObjectName("Primary")
         add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         add_btn.clicked.connect(self._on_quick_add)
@@ -195,7 +225,7 @@ class MainWindow(QWidget):
         QShortcut(QKeySequence("Ctrl+Q"), self, self.close)
         QShortcut(QKeySequence("Ctrl+T"), self, self._toggle_theme)
 
-    # ================= 主题 =================
+    # ================= 主题与设置 =================
 
     def apply_theme(self, theme: str) -> None:
         self.theme = theme
@@ -210,7 +240,25 @@ class MainWindow(QWidget):
     def _toggle_theme(self) -> None:
         self.apply_theme("light" if self.theme == "dark" else "dark")
         self.refresh()
-        self.toast.show_message("已切换为" + ("浅色" if self.theme == "light" else "深色") + "主题")
+        self.toast.show_message(
+            t("已切换为{kind}主题", kind=t("浅色") if self.theme == "light" else t("深色"))
+        )
+
+    def open_settings(self) -> None:
+        """打开设置对话框；主题即时生效，语言变化时重建窗口。"""
+        dialog = SettingsDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        if dialog.theme_value() != self.theme:
+            self.apply_theme(dialog.theme_value())
+            self.refresh()
+        if not dialog.language_changed():
+            return
+        # 语言已切换：用新语言重建整个窗口（全部文案在构建时取 t()）
+        new_window = MainWindow(self.repo, theme=self.theme)
+        new_window.show()
+        self._replaced = True
+        self.close()
 
     # ================= 数据刷新 =================
 
@@ -222,20 +270,24 @@ class MainWindow(QWidget):
         if self.filter_key.startswith("cat:"):
             category = self.filter_key[4:]
             tasks = self.repo.list_tasks("all", category=category, search=self.search_text)
-            self.page_title.setText(f"分类 · {category}")
+            self.page_title.setText(t("分类 · {category}", category=category))
         else:
             tasks = self.repo.list_tasks(self.filter_key, search=self.search_text)
-            self.page_title.setText(FILTERS.get(self.filter_key, FILTERS["all"])[0])
+            self.page_title.setText(filter_label(self.filter_key))
 
         # 更新副标题统计
-        pending = sum(1 for t in tasks if not t.completed)
+        pending = sum(1 for task in tasks if not task.completed)
         done = len(tasks) - pending
         if self.search_text:
-            self.page_subtitle.setText(f"搜索「{self.search_text}」· 共 {len(tasks)} 条")
+            self.page_subtitle.setText(
+                t("搜索「{query}」· 共 {count} 条", query=self.search_text, count=len(tasks))
+            )
         elif tasks:
-            self.page_subtitle.setText(f"待完成 {pending} 条 · 已完成 {done} 条")
+            self.page_subtitle.setText(
+                t("待完成 {pending} 条 · 已完成 {done} 条", pending=pending, done=done)
+            )
         else:
-            self.page_subtitle.setText("还没有任务，从下面添加一条吧")
+            self.page_subtitle.setText(t("还没有任务，从下面添加一条吧"))
 
         self._render_tasks(tasks)
 
@@ -291,11 +343,11 @@ class MainWindow(QWidget):
         icon.setObjectName("EmptyIcon")
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        title = QLabel("这里空空如也")
+        title = QLabel(t("这里空空如也"))
         title.setObjectName("EmptyTitle")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        hint = QLabel("在下方输入框添加任务，或按 Ctrl+N 新建任务、Ctrl+B 新建待办块")
+        hint = QLabel(t("在下方输入框添加任务，或按 Ctrl+N 新建任务、Ctrl+B 新建待办块"))
         hint.setObjectName("EmptyHint")
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
@@ -318,21 +370,25 @@ class MainWindow(QWidget):
         raw = self.quick_edit.text().strip()
         if not raw:
             return
-        title, priority, category, due = parse_quick_input(raw)
+        title, priority, category, due = parse_quick_input(
+            raw,
+            default_priority=Priority.from_value(app_settings.get_value("default_priority")),
+            default_category=app_settings.get_value("default_category"),
+        )
         if not title:
-            self.toast.show_message("请填写任务标题")
+            self.toast.show_message(t("请填写任务标题"))
             return
         self.repo.add(Task(title=title, priority=priority, category=category, due_date=due))
         self.quick_edit.clear()
         self.refresh()
-        self.toast.show_message(f"已添加「{title}」")
+        self.toast.show_message(t("已添加「{title}」", title=title))
 
     def _on_new_task(self) -> None:
         dialog = TaskDialog(self, categories=self._category_names())
         if dialog.exec() == QDialog.DialogCode.Accepted and dialog.result_task:
             self.repo.add(dialog.result_task)
             self.refresh()
-            self.toast.show_message(f"已添加「{dialog.result_task.title}」")
+            self.toast.show_message(t("已添加「{title}」", title=dialog.result_task.title))
 
     def _on_new_block(self) -> None:
         dialog = BlockDialog(self, categories=self._category_names())
@@ -341,7 +397,8 @@ class MainWindow(QWidget):
             self._expanded_blocks.add(saved.id)
             self.refresh()
             self.toast.show_message(
-                f"已创建待办块「{saved.title}」· 含 {saved.sub_total} 条待办"
+                t("已创建待办块「{title}」· 含 {count} 条待办",
+                  title=saved.title, count=saved.sub_total)
             )
 
     def _category_names(self) -> list[str]:
@@ -362,14 +419,14 @@ class MainWindow(QWidget):
             self._expanded_blocks.add(saved.id)
             self._sync_block_completion(saved.id)
             self.refresh()
-            self.toast.show_message("已保存待办块")
+            self.toast.show_message(t("已保存待办块"))
             return
 
         dialog = TaskDialog(self, task=task, categories=self._category_names())
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.repo.update(dialog.result_task)
             self.refresh()
-            self.toast.show_message("已保存修改")
+            self.toast.show_message(t("已保存修改"))
 
     def _on_toggle(self, task_id: int, completed: bool) -> None:
         task = self.repo.get(task_id)
@@ -382,7 +439,7 @@ class MainWindow(QWidget):
         if completed:
             fresh = self.repo.get(task_id)
             if fresh:
-                self.toast.show_message(f"完成「{fresh.title}」✓")
+                self.toast.show_message(t("完成「{title}」✓", title=fresh.title))
             self._check_daily_congrats()
 
     # ================= 待办块 =================
@@ -412,7 +469,7 @@ class MainWindow(QWidget):
         if item is None:
             return
         text = InputDialog.get_text(
-            self, "重命名子待办", "内容", item.text, placeholder="子待办内容…"
+            self, t("重命名子待办"), t("内容"), item.text, placeholder=t("子待办内容…")
         )
         if text:
             self.repo.rename_item(item_id, text)
@@ -435,7 +492,9 @@ class MainWindow(QWidget):
     def _check_daily_congrats(self) -> None:
         done, due = self.repo.stats()
         if due and done >= due:
-            self.toast.show_message(f"太棒了！今天的 {due} 项任务全部完成 🎉", 2600)
+            self.toast.show_message(
+                t("太棒了！今天的 {count} 项任务全部完成 🎉", count=due), 2600
+            )
 
     def _on_delete(self, task_id: int) -> None:
         task = self.repo.get(task_id)
@@ -443,18 +502,21 @@ class MainWindow(QWidget):
             return
 
         if task.is_block and task.sub_total:
-            title = "删除待办块"
-            text = f"确定删除「{task.title}」吗？\n块内的 {task.sub_total} 条待办也会一并删除，此操作不可撤销。"
+            title = t("删除待办块")
+            text = t(
+                "确定删除「{title}」吗？\n块内的 {count} 条待办也会一并删除，此操作不可撤销。",
+                title=task.title, count=task.sub_total,
+            )
         else:
-            title = "删除任务"
-            text = f"确定要删除「{task.title}」吗？\n此操作不可撤销。"
+            title = t("删除任务")
+            text = t("确定要删除「{title}」吗？\n此操作不可撤销。", title=task.title)
 
-        if MessageDialog.question(self, title, text, ok_text="删除", danger=True):
+        if MessageDialog.question(self, title, text, ok_text=t("删除"), danger=True):
             if task_id in self._expanded_blocks:
                 self._expanded_blocks.discard(task_id)
             self.repo.delete(task_id)
             self.refresh()
-            self.toast.show_message("已删除")
+            self.toast.show_message(t("已删除"))
 
     def _on_priority(self, task_id: int, priority: int) -> None:
         task = self.repo.get(task_id)
@@ -475,19 +537,19 @@ class MainWindow(QWidget):
     def _on_clear_completed(self) -> None:
         count = self.repo.counts().get("completed", 0)
         if not count:
-            self.toast.show_message("没有已完成的任务")
+            self.toast.show_message(t("没有已完成的任务"))
             return
         if MessageDialog.question(
             self,
-            "清除已完成",
-            f"确定要删除全部 {count} 条已完成任务吗？\n此操作不可撤销。",
-            ok_text="全部删除",
+            t("清除已完成"),
+            t("确定要删除全部 {count} 条已完成任务吗？\n此操作不可撤销。", count=count),
+            ok_text=t("全部删除"),
             danger=True,
         ):
             removed = self.repo.clear_completed()
             self._expanded_blocks.clear()
             self.refresh()
-            self.toast.show_message(f"已清除 {removed} 条任务")
+            self.toast.show_message(t("已清除 {count} 条任务", count=removed))
 
     # ================= 窗口生命周期 =================
 
@@ -503,5 +565,7 @@ class MainWindow(QWidget):
 
     def closeEvent(self, event) -> None:  # noqa: N802
         self._settings.setValue("geometry", self.saveGeometry())
-        self.repo.close()
+        # 语言切换重建时新窗口共享同一个 repo，不能在这里关闭
+        if not self._replaced:
+            self.repo.close()
         super().closeEvent(event)

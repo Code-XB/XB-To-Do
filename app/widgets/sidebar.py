@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..database import FILTERS
+from ..i18n import filter_label, t
 
 # 视图图标
 FILTER_ICONS = {
@@ -74,6 +75,7 @@ class Sidebar(QWidget):
     selection_changed = Signal(str)
     clear_completed = Signal()
     theme_toggled = Signal()
+    settings_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -105,28 +107,34 @@ class Sidebar(QWidget):
         root.addSpacing(12)
 
         # 视图
-        root.addWidget(self._section("视图"))
+        root.addWidget(self._section(t("视图")))
         for key, (label, _) in FILTERS.items():
-            btn = NavButton(key, FILTER_ICONS.get(key, "•"), label)
+            btn = NavButton(key, FILTER_ICONS.get(key, "•"), filter_label(key))
             btn.clicked.connect(lambda _=False, k=key: self._select(k))
             self._nav_buttons[key] = btn
             root.addWidget(btn)
 
         root.addSpacing(14)
-        root.addWidget(self._section("分类"))
+        root.addWidget(self._section(t("分类")))
         self.cat_container = QVBoxLayout()
         self.cat_container.setSpacing(6)
         root.addLayout(self.cat_container)
 
         root.addStretch(1)
 
-        theme_btn = QPushButton("🌗  切换主题")
+        theme_btn = QPushButton(t("🌗  切换主题"))
         theme_btn.setObjectName("Ghost")
         theme_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         theme_btn.clicked.connect(self.theme_toggled.emit)
         root.addWidget(theme_btn)
 
-        clear_btn = QPushButton("🧹  清除已完成")
+        settings_btn = QPushButton(t("⚙  设置"))
+        settings_btn.setObjectName("Ghost")
+        settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        settings_btn.clicked.connect(self.settings_requested.emit)
+        root.addWidget(settings_btn)
+
+        clear_btn = QPushButton(t("🧹  清除已完成"))
         clear_btn.setObjectName("Ghost")
         clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         clear_btn.clicked.connect(self.clear_completed.emit)
@@ -160,6 +168,12 @@ class Sidebar(QWidget):
     def current_key(self) -> str:
         return self._current
 
+    def set_current(self, key: str) -> None:
+        """外部设置当前视图（不发出 selection_changed，用于启动视图恢复）。"""
+        if key in self._nav_buttons:
+            self._current = key
+            self._set_checked(key, True)
+
     # ---------- 数据刷新 ----------
 
     def refresh(self, counts: dict[str, int], categories: list[tuple[str, int]]) -> None:
@@ -177,7 +191,7 @@ class Sidebar(QWidget):
         self._category_buttons.clear()
 
         if not categories:
-            hint = QLabel("暂无分类")
+            hint = QLabel(t("暂无分类"))
             hint.setStyleSheet("color: #6b7186; font-size: 12px; padding: 4px 12px;")
             self.cat_container.addWidget(hint)
         else:

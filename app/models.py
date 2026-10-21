@@ -7,6 +7,8 @@ from datetime import date, datetime
 from enum import IntEnum
 from typing import Optional
 
+from .i18n import t
+
 
 class Priority(IntEnum):
     """任务优先级。数值越大优先级越高，便于排序。"""
@@ -17,7 +19,7 @@ class Priority(IntEnum):
 
     @property
     def label(self) -> str:
-        return {Priority.LOW: "低", Priority.MEDIUM: "中", Priority.HIGH: "高"}[self]
+        return {Priority.LOW: t("低"), Priority.MEDIUM: t("中"), Priority.HIGH: t("高")}[self]
 
     @property
     def color(self) -> str:
@@ -33,6 +35,9 @@ class Priority(IntEnum):
 
 # 内置分类，用户也可在编辑时自由填写新分类
 DEFAULT_CATEGORIES = ["工作", "生活", "学习", "健康"]
+
+# 未归类任务的兜底分类名（数据值，不随界面语言变化）
+DEFAULT_CATEGORY = "默认"
 
 
 @dataclass
@@ -130,15 +135,15 @@ class Task:
             return ""
         delta = (d - date.today()).days
         if delta == 0:
-            return "今天"
+            return t("今天")
         if delta == 1:
-            return "明天"
+            return t("明天")
         if delta == -1:
-            return "昨天"
+            return t("昨天")
         if delta < 0:
-            return f"逾期 {abs(delta)} 天"
+            return t("逾期 {days} 天", days=abs(delta))
         if delta <= 7:
-            return f"{delta} 天后"
+            return t("{days} 天后", days=delta)
         return d.strftime("%m-%d")
 
     def to_row(self) -> tuple:

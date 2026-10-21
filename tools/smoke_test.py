@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
@@ -174,6 +175,9 @@ def test_project_files() -> None:
         "运行测试.bat",
         "tools/find_python.cmd",
         "icon/icon.ico",
+        "app/lang/zh_CN.json",
+        "app/lang/en_US.json",
+        "tools/lang_tool.py",
     ]
     missing = [rel for rel in expected if not (ROOT / rel).is_file()]
     check(not missing, f"标准工程文件齐全（缺失：{missing}）")
@@ -186,6 +190,15 @@ def test_project_files() -> None:
     check(header[:4] == b"\x00\x00\x01\x00", "图标为合法 .ico 文件")
     sizes = int.from_bytes(header[4:6], "little")
     check(sizes >= 5, f".ico 包含多个尺寸（{sizes} 个），适配任务栏与高 DPI")
+
+    # 语言文件：合法 JSON、meta 齐全、源语言为键值映射
+    for rel in ("app/lang/zh_CN.json", "app/lang/en_US.json"):
+        try:
+            data = json.loads((ROOT / rel).read_text(encoding="utf-8"))
+            ok = isinstance(data.get("meta"), dict) and isinstance(data.get("strings"), dict)
+            check(ok, f"{rel} 结构合法（meta + strings，{len(data.get('strings', {}))} 条）")
+        except (OSError, ValueError) as exc:
+            check(False, f"{rel} 可解析 - {exc}")
 
     check(re.fullmatch(r"\d+\.\d+\.\d+", __version__) is not None,
           f"版本号格式规范 -> {__version__}")
@@ -235,11 +248,22 @@ def test_parsers() -> None:
     check(parse_natural_date("周五") is not None, "解析「周五」")
     check(parse_natural_date("2026-12-25") == "2026-12-25", "解析完整日期")
     check(parse_natural_date("10-20") == f"{date.today().year}-10-20", "解析月-日")
+    check(parse_natural_date("today") == date.today().isoformat(), "解析英文 today")
+    check(
+        parse_natural_date("tomorrow") == (date.today() + timedelta(days=1)).isoformat(),
+        "解析英文 tomorrow",
+    )
 
 
 def test_ui(shots: bool) -> None:
     print("\n== 界面 ==")
     from main import build_application, seed_demo
+
+    from app import app_settings
+    # 只重置功能默认值相关键（不动 theme / language，避免改掉本机真实偏好）
+    app_settings.set_many({
+        k: v for k, v in app_settings.DEFAULTS.items() if k.startswith("default_")
+    } | {"startup_view": app_settings.DEFAULTS["startup_view"]})
 
     build_application()
     app = QApplication.instance()
@@ -420,6 +444,39 @@ def test_ui(shots: bool) -> None:
         input_dialog.close()
 
         print(f"[PASS] 截图已输出到 {out}")
+
+    # ===== 设置与多语言 =====
+    from app import app_settings
+    from app.widgets.task_dialog import TaskDialog
+    from app.i18n import available_languages, set_language
+    from app.widgets.settings_dialog import SettingsDialog
+
+    codes = {item["code"] for item in available_languages()}
+    check("zh_CN" in codes and "en_US" in codes, f"内置语言可选 zh_CN / en_US（{sorted(codes)}）")
+
+    settings_dialog = SettingsDialog(window)
+    settings_dialog.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    lang_codes = {
+        settings_dialog.lang_combo.itemData(i) for i in range(settings_dialog.lang_combo.count())
+    }
+    check("en_US" in lang_codes, "设置对话框语言下拉包含 en_US")
+    settings_dialog.prio_combo.setCurrentIndex(settings_dialog.prio_combo.findData(2))
+    settings_dialog._on_save()
+    check(app_settings.get_value("default_priority") == 2, "设置默认优先级写入生效")
+
+    task_dlg = TaskDialog(window, categories=[])
+    task_dlg.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    check(task_dlg.pc.prio_combo.currentData() == 2, "新建任务对话框套用默认优先级")
+    app_settings.set_many({"default_priority": 1})  # 还原
+
+    # 英文界面重建后窗口文案
+    set_language("en_US")
+    window_en = MainWindow(repo, theme="dark")
+    check(window_en.windowTitle() == "XB-To-Do", "英文界面窗口标题")
+    check(window_en.page_title.text() == "All tasks", "英文界面页面标题")
+    window_en._replaced = True
+    window_en.close()
+    set_language("zh_CN")
 
     repo.close()
     window.close()

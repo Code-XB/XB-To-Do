@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..i18n import t
 from ..models import ChecklistItem, Priority, Task
 from ..theme import PALETTES, asset_url
 from .common import Chip, repolish
@@ -51,7 +52,7 @@ class _SubRow(QWidget):
         self.label = QLabel(item.text)
         self.label.setObjectName("SubItemText")
         self.label.setProperty("done", "true" if item.done else "false")
-        self.label.setToolTip("双击可重命名")
+        self.label.setToolTip(t("双击可重命名"))
         lay.addWidget(self.label, 1)
 
         self.del_btn = QPushButton("✕")
@@ -59,7 +60,7 @@ class _SubRow(QWidget):
         self.del_btn.setProperty("danger", "true")
         self.del_btn.setFixedSize(24, 24)
         self.del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.del_btn.setToolTip("删除这一条")
+        self.del_btn.setToolTip(t("删除这一条"))
         self.del_btn.clicked.connect(lambda: self.delete_requested.emit(self.item.id))
         self.del_btn.setVisible(False)
         lay.addWidget(self.del_btn, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -163,7 +164,7 @@ class TaskItem(QFrame):
             self.expand_btn.setObjectName("ExpandButton")
             self.expand_btn.setFixedSize(22, 22)
             self.expand_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            self.expand_btn.setToolTip("收起子待办" if self.expanded else "展开子待办")
+            self.expand_btn.setToolTip(t("收起子待办") if self.expanded else t("展开子待办"))
             self.expand_btn.setIcon(self._expand_icon())
             self.expand_btn.clicked.connect(
                 lambda: self.expand_toggled.emit(self.task.id, not self.expanded)
@@ -222,7 +223,9 @@ class TaskItem(QFrame):
         if self.task.category:
             bottom.addWidget(Chip(self.task.category, self._palette["text_dim"]))
 
-        bottom.addWidget(Chip(f"{self.task.priority.label}优先", self.task.priority.color))
+        bottom.addWidget(
+                Chip(t("{label}优先", label=self.task.priority.label), self.task.priority.color)
+            )
 
         if self.task.note:
             note = QLabel()
@@ -246,7 +249,7 @@ class TaskItem(QFrame):
         self.delete_btn.setProperty("danger", "true")
         self.delete_btn.setFixedSize(28, 28)
         self.delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.delete_btn.setToolTip("删除任务")
+        self.delete_btn.setToolTip(t("删除任务"))
         self.delete_btn.clicked.connect(lambda: self.delete_requested.emit(self.task.id))
         self.delete_btn.setVisible(False)
         row.addWidget(self.delete_btn, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -288,7 +291,7 @@ class TaskItem(QFrame):
 
         self.sub_input = QLineEdit()
         self.sub_input.setObjectName("SubInput")
-        self.sub_input.setPlaceholderText("添加子项，回车确认 ↵")
+        self.sub_input.setPlaceholderText(t("添加子项，回车确认 ↵"))
         self.sub_input.returnPressed.connect(self._on_sub_input)
         lay.addWidget(self.sub_input)
 
@@ -344,18 +347,22 @@ class TaskItem(QFrame):
     def contextMenuEvent(self, event) -> None:  # noqa: N802
         menu = QMenu(self)
 
-        act_edit = QAction("✎  编辑" + ("待办块" if self.task.is_block else "任务"), menu)
+        act_edit = QAction(
+            t("✎  编辑{kind}", kind=t("待办块") if self.task.is_block else t("任务")), menu
+        )
         act_edit.triggered.connect(lambda: self.edit_requested.emit(self.task.id))
         menu.addAction(act_edit)
 
         if self.task.is_block:
-            act_expand = QAction("收起子待办" if self.expanded else "展开子待办", menu)
+            act_expand = QAction(t("收起子待办") if self.expanded else t("展开子待办"), menu)
             act_expand.triggered.connect(
                 lambda: self.expand_toggled.emit(self.task.id, not self.expanded)
             )
             menu.addAction(act_expand)
 
-        act_done = QAction("↺  标记为未完成" if self.task.completed else "✓  标记为已完成", menu)
+        act_done = QAction(
+            t("↺  标记为未完成") if self.task.completed else t("✓  标记为已完成"), menu
+        )
         act_done.triggered.connect(
             lambda: self.toggle_requested.emit(self.task.id, not self.task.completed)
         )
@@ -363,21 +370,25 @@ class TaskItem(QFrame):
 
         menu.addSeparator()
 
-        prio_menu = menu.addMenu("⚑  优先级")
+        prio_menu = menu.addMenu(t("⚑  优先级"))
         for p in (Priority.HIGH, Priority.MEDIUM, Priority.LOW):
-            act = QAction(("● " if p == self.task.priority else "   ") + f"{p.label}优先", prio_menu)
+            act = QAction(
+                ("● " if p == self.task.priority else "   ")
+                + t("{label}优先", label=p.label),
+                prio_menu,
+            )
             act.triggered.connect(
                 lambda _=False, pr=p: self.priority_requested.emit(self.task.id, int(pr))
             )
             prio_menu.addAction(act)
 
-        due_menu = menu.addMenu("📅  到期日")
+        due_menu = menu.addMenu(t("📅  到期日"))
         today = date.today()
         for label, d in (
-            ("今天", today),
-            ("明天", today + timedelta(days=1)),
-            ("本周末", today + timedelta(days=(5 - today.weekday()) % 7 or 7)),
-            ("一周后", today + timedelta(days=7)),
+            (t("今天"), today),
+            (t("明天"), today + timedelta(days=1)),
+            (t("本周末"), today + timedelta(days=(5 - today.weekday()) % 7 or 7)),
+            (t("一周后"), today + timedelta(days=7)),
         ):
             act = QAction(label, due_menu)
             act.triggered.connect(
@@ -386,12 +397,12 @@ class TaskItem(QFrame):
             due_menu.addAction(act)
         if self.task.due_date:
             due_menu.addSeparator()
-            act = QAction("✕  清除到期日", due_menu)
+            act = QAction(t("✕  清除到期日"), due_menu)
             act.triggered.connect(lambda: self.due_requested.emit(self.task.id, None))
             due_menu.addAction(act)
 
         menu.addSeparator()
-        act_del = QAction("🗑  删除", menu)
+        act_del = QAction(t("🗑  删除"), menu)
         act_del.triggered.connect(lambda: self.delete_requested.emit(self.task.id))
         menu.addAction(act_del)
 
