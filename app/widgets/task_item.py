@@ -278,8 +278,10 @@ class TaskItem(QFrame):
 
         for item in self.task.items:
             row = _SubRow(item)
+            # toggle_requested 是 (item_id, done) 两个参数：第一个位置必须由信号填，
+            # 否则第二个参数（bool）会顶掉 iid 的默认值，勾选会写到别的子项上。
             row.toggle_requested.connect(
-                lambda done, iid=item.id: self.item_toggled.emit(self.task.id, iid, done)
+                lambda _iid, done, iid=item.id: self.item_toggled.emit(self.task.id, iid, done)
             )
             row.edit_requested.connect(
                 lambda iid=item.id: self.item_edit_requested.emit(self.task.id, iid)
@@ -387,7 +389,8 @@ class TaskItem(QFrame):
         for label, d in (
             (t("今天"), today),
             (t("明天"), today + timedelta(days=1)),
-            (t("本周末"), today + timedelta(days=(5 - today.weekday()) % 7 or 7)),
+            # 周六当天「本周末」就是今天，因此不再用 `or 7` 兜底成下周六
+            (t("本周末"), today + timedelta(days=(5 - today.weekday()) % 7)),
             (t("一周后"), today + timedelta(days=7)),
         ):
             act = QAction(label, due_menu)

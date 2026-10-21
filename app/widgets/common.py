@@ -9,7 +9,7 @@ from PySide6.QtCore import (
     Qt,
     QTimer,
 )
-from PySide6.QtWidgets import QLabel, QWidget
+from PySide6.QtWidgets import QGraphicsOpacityEffect, QLabel, QWidget
 
 from ..theme import rgba
 
@@ -50,18 +50,25 @@ class Toast(QLabel):
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self._fade_out)
 
-        self._anim = QPropertyAnimation(self, b"windowOpacity", self)
+        # windowOpacity 只对顶层窗口生效，子控件必须用 QGraphicsOpacityEffect
+        # 才能真的淡出（否则只是到点直接消失）
+        self._effect = QGraphicsOpacityEffect(self)
+        self._effect.setOpacity(1.0)
+        self.setGraphicsEffect(self._effect)
+
+        self._anim = QPropertyAnimation(self._effect, b"opacity", self)
         self._anim.setDuration(220)
         self._anim.setEasingCurve(QEasingCurve.Type.InOutQuad)
-        # 首次淡出时 finished 还没连接过，直接 disconnect 会让 PySide 打印
-        # "Failed to disconnect (None) from signal" 警告，因此用标志位记录连接状态
-        self._fade_connected = False
+        self._anim.finished.connect(self._on_fade_finished)
 
     def show_message(self, text: str, msec: int = 1800) -> None:
+        # 上一条的淡出动画可能还在跑：先停掉并复位透明度，
+        # 否则新提示会顺着旧动画一起淡掉/被提前 hide
+        self._anim.stop()
+        self._effect.setOpacity(1.0)
         self.setText(text)
         self.adjustSize()
         self._reposition()
-        self.setWindowOpacity(1.0)
         self.show()
         self.raise_()
         self._timer.start(msec)
@@ -78,8 +85,9 @@ class Toast(QLabel):
         self._anim.stop()
         self._anim.setStartValue(1.0)
         self._anim.setEndValue(0.0)
-        if self._fade_connected:
-            self._anim.finished.disconnect()
-        self._anim.finished.connect(self.hide)
-        self._fade_connected = True
         self._anim.start()
+
+    def _on_fade_finished(self) -> None:
+        # stop() 打断动画时也可能走到这里，确认真的淡到透明再隐藏
+        if self._effect.opacity() <= 0.01:
+            self.hide()

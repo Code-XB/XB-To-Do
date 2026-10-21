@@ -72,3 +72,4 @@ $RECYCLE.BIN/
 .DS_Store
 
 .workbuddy/
+nuitka-crash-report.xml

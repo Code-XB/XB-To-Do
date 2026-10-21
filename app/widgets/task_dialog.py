@@ -129,8 +129,11 @@ class _DueRow:
     def load(self, task: Optional[Task]) -> None:
         if task:
             if task.due_date:
-                self.check.setChecked(True)
-                self.edit.setDate(QDate.fromString(task.due_date, "yyyy-MM-dd"))
+                qd = QDate.fromString(task.due_date, "yyyy-MM-dd")
+                # 库里的脏数据（如空串、非法日期）要当作「未设置」，否则会被原样写回
+                if qd.isValid():
+                    self.check.setChecked(True)
+                    self.edit.setDate(qd)
             return
         # 新建：应用「默认到期日」设置
         mode = app_settings.get_value("default_due")
@@ -147,7 +150,8 @@ class _DueRow:
     def value(self) -> Optional[str]:
         if not self.check.isChecked():
             return None
-        return self.edit.date().toString("yyyy-MM-dd")
+        d = self.edit.date()
+        return d.toString("yyyy-MM-dd") if d.isValid() else None
 
 
 class TaskDialog(CardDialog):
@@ -403,51 +407,58 @@ def parse_natural_date(text: str) -> Optional[str]:
     today = date.today()
     low = raw.lower()
 
-    def hit(word: str) -> bool:
-        """目标词是否出现在输入中（含翻译变体与固定英文别名，忽略大小写）。"""
-        variants = {word.lower(), t(word).lower()}
-        variants.update(_EN_DAY_WORDS.get(word.lower(), ()))
-        return any(v and v in low for v in variants)
-
-    # 固定英文别名：无论界面语言如何，today / tomorrow 都可用
+    # 固定日期词组：同一输入可能同时命中多个词（「大后天」含「后天」、
+    # "day after tomorrow" 含 "tomorrow"），必须取命中最长的那个，否则会差 1~3 天
+    best_len, best_offset = 0, 0
     for word, offset in (("今天", 0), ("今日", 0), ("明天", 1), ("明日", 1),
                          ("后天", 2), ("大后天", 3)):
-        if hit(word):
-            return (today + timedelta(days=offset)).isoformat()
+        for variant in {word, t(word), *_EN_DAY_WORDS.get(word, ())}:
+            # 输入已去掉空格，变体也要去掉才能命中 "day after tomorrow" 这类多词译文
+            v = variant.strip().lower().replace(" ", "")
+            if v and v in low and len(v) > best_len:
+                best_len, best_offset = len(v), offset
+    if best_len:
+        return (today + timedelta(days=best_offset)).isoformat()
+
+    # 本周的周一（中文习惯：周一为一周之首），用于「本周X / 下周X / 下下周X」
+    monday = today - timedelta(days=today.weekday())
+
+    def nearest(target: int) -> str:
+        """最近的那一天（含今天）：不带周前缀的「周三」「friday」都按此语义。"""
+        return (today + timedelta(days=(target - today.weekday()) % 7)).isoformat()
 
     weekdays = {"一": 0, "二": 1, "三": 2, "四": 3, "五": 4,
                 "六": 5, "日": 6, "天": 6}
+    # 前缀 -> 相对本周的周数；None 表示「最近的那一天（含今天）」
+    prefixes = (("下下周", 2), ("下周", 1), ("本周", 0), ("这周", 0),
+                ("周", None), ("星期", None), ("礼拜", None))
     for word, target in weekdays.items():
-        for prefix in ("下下周", "下周", "本周", "这周", "周", "星期", "礼拜"):
+        for prefix, weeks in prefixes:
             key = f"{prefix}{word}"
             variants = {key.lower(), t(key).lower()}
-            if any(v and v in low for v in variants):
-                base = today + timedelta(days=(target - today.weekday()) % 7)
-                if key.startswith("下下周"):
-                    base += timedelta(days=14)
-                elif key.startswith("下周"):
-                    base += timedelta(days=7)
-                elif base == today:
-                    base += timedelta(days=7)
-                return base.isoformat()
+            if not any(v and v.replace(" ", "") in low for v in variants):
+                continue
+            if weeks is None:
+                return nearest(target)
+            return (monday + timedelta(days=weeks * 7 + target)).isoformat()
 
-    # 英文星期与 next 前缀（翻译键 "周一" -> "Monday" 等）
+    # 英文星期与 next 前缀（翻译键 "周一" -> "Monday" 等；输入已去空格，故写作 nextmonday）
     en_weekdays = [("monday", 0), ("tuesday", 1), ("wednesday", 2), ("thursday", 3),
                    ("friday", 4), ("saturday", 5), ("sunday", 6)]
+    for name, target in en_weekdays:
+        if name not in low:
+            continue
+        if ("next" + name) in low:
+            return (monday + timedelta(days=7 + target)).isoformat()
+        return nearest(target)
+
     en_abbr = {"mon": 0, "tue": 1, "tues": 1, "wed": 2, "thu": 3, "thur": 3,
                "thurs": 3, "fri": 4, "sat": 5, "sun": 6}
-    for name, target in en_weekdays:
-        if name in low:
-            base = today + timedelta(days=(target - today.weekday()) % 7)
-            if base == today or ("next " + name) in low:
-                base += timedelta(days=7 if base == today else 0)
-            return base.isoformat()
     for abbr, target in en_abbr.items():
-        if len(low) <= 5 and abbr == low:
-            base = today + timedelta(days=(target - today.weekday()) % 7)
-            if base == today:
-                base += timedelta(days=7)
-            return base.isoformat()
+        if low == abbr:
+            return nearest(target)
+        if low == "next" + abbr:
+            return (monday + timedelta(days=7 + target)).isoformat()
 
     # 绝对日期：2026-10-20 / 10/20 / 10月20日
     normalized = raw.replace("/", "-").replace("月", "-").replace("日", "").strip("-")

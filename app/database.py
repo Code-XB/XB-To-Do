@@ -15,10 +15,27 @@ FILTERS: dict[str, tuple[str, str]] = {
     "today": ("今天到期", "completed = 0 AND due_date = :today"),
     "active": ("进行中", "completed = 0"),
     "upcoming": ("未来 7 天", "completed = 0 AND due_date > :today AND due_date <= :week"),
-    "overdue": ("已逾期", "completed = 0 AND due_date < :today"),
+    # 空串在 SQL 里排在所有日期之前，不加这个守卫会被误判成「已逾期」
+    "overdue": ("已逾期", "completed = 0 AND due_date <> '' AND due_date < :today"),
     "high": ("高优先级", "completed = 0 AND priority = 2"),
     "completed": ("已完成", "completed = 1"),
 }
+
+# SQLite 对单条语句的绑定变量数量有上限（老版本为 999），批量 IN 查询要分块
+_IN_CHUNK = 500
+
+
+def _chunks(values: list, size: int | None = None) -> Iterable[list]:
+    """把长列表切成若干不超过 SQLite 变量上限的小块。"""
+    step = size or _IN_CHUNK
+    for start in range(0, len(values), step):
+        yield values[start:start + step]
+
+
+def _like_pattern(text: str) -> str:
+    """用户输入 -> LIKE 模式：转义 % 与 _，避免搜一个下划线命中全部。"""
+    escaped = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
 
 
 class TaskRepository:
@@ -30,6 +47,8 @@ class TaskRepository:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.executescript(SCHEMA)
+        # 历史数据兼容：空字符串到期日在 SQL 比较里早于任何日期，会被判成逾期
+        self.conn.execute("UPDATE tasks SET due_date = NULL WHERE due_date = ''")
         self.conn.commit()
 
     # ---------- 内部工具 ----------
@@ -46,15 +65,16 @@ class TaskRepository:
         ids = [t.id for t in tasks if t.id is not None]
         if not ids:
             return tasks
-        placeholders = ",".join("?" * len(ids))
-        rows = self.conn.execute(
-            f"SELECT * FROM checklist_items WHERE task_id IN ({placeholders})"
-            " ORDER BY position ASC, id ASC",
-            ids,
-        ).fetchall()
         grouped: dict[int, list[ChecklistItem]] = {}
-        for row in rows:
-            grouped.setdefault(row["task_id"], []).append(ChecklistItem.from_row(row))
+        for chunk in _chunks(ids):
+            placeholders = ",".join("?" * len(chunk))
+            rows = self.conn.execute(
+                f"SELECT * FROM checklist_items WHERE task_id IN ({placeholders})"
+                " ORDER BY position ASC, id ASC",
+                chunk,
+            ).fetchall()
+            for row in rows:
+                grouped.setdefault(row["task_id"], []).append(ChecklistItem.from_row(row))
         for task in tasks:
             task.items = grouped.get(task.id, [])
         return tasks
@@ -77,8 +97,11 @@ class TaskRepository:
             params["category"] = category
 
         if search.strip():
-            clauses.append("(title LIKE :kw OR note LIKE :kw OR category LIKE :kw)")
-            params["kw"] = f"%{search.strip()}%"
+            clauses.append(
+                "(title LIKE :kw ESCAPE '\\' OR note LIKE :kw ESCAPE '\\'"
+                " OR category LIKE :kw ESCAPE '\\')"
+            )
+            params["kw"] = _like_pattern(search.strip())
 
         sql = f"""
             SELECT * FROM tasks
@@ -142,6 +165,35 @@ class TaskRepository:
             "SELECT COUNT(*) FROM tasks WHERE due_date = ?", (today,)
         ).fetchone()[0]
         return done, due
+
+    def today_progress(self) -> tuple[int, int]:
+        """返回 (今日到期且已完成数, 今日到期总数)。
+
+        与 ``stats()`` 的区别：只统计「今天到期」的那批任务，两者同源，
+        这样「今天的任务全部完成」提示才不会因为完成了别的任务而误发。
+        """
+        today = date.today().isoformat()
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS total,"
+            "       COALESCE(SUM(CASE WHEN completed = 1 THEN 1 ELSE 0 END), 0) AS done"
+            " FROM tasks WHERE due_date = ?",
+            (today,),
+        ).fetchone()
+        return int(row["done"] or 0), int(row["total"] or 0)
+
+    def existing_ids(self, ids: Iterable[int]) -> set[int]:
+        """从给定 id 中筛出仍然存在的任务 id（用于清理已删除任务的界面状态）。"""
+        values = [int(i) for i in ids if i is not None]
+        found: set[int] = set()
+        for chunk in _chunks(values):
+            placeholders = ",".join("?" * len(chunk))
+            found.update(
+                row[0]
+                for row in self.conn.execute(
+                    f"SELECT id FROM tasks WHERE id IN ({placeholders})", chunk
+                )
+            )
+        return found
 
     # ---------- 写入 ----------
 

@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
 
 from . import app_settings
 from .database import FILTERS, TaskRepository
-from .i18n import current_language, filter_label, set_language, t
+from .i18n import filter_label, t
 from .models import DEFAULT_CATEGORY, Priority, Task
 from .theme import asset_url, build_qss, set_current_theme
 from .widgets.common import Toast
@@ -263,6 +263,8 @@ class MainWindow(QWidget):
     # ================= 数据刷新 =================
 
     def refresh(self) -> None:
+        # 任务可能在别处被删除（清除已完成等），顺手清掉不再存在的展开态，避免集合无限增长
+        self._expanded_blocks = self.repo.existing_ids(self._expanded_blocks)
         counts = self.repo.counts()
         categories = self.repo.categories()
         self.sidebar.refresh(counts, categories)
@@ -370,10 +372,17 @@ class MainWindow(QWidget):
         raw = self.quick_edit.text().strip()
         if not raw:
             return
+        # 分类视图下快速添加，默认落到当前分类，否则新任务会立刻从当前列表里消失
+        # （显式写的 #分类 仍然优先，由 parse_quick_input 覆盖）
+        default_category = (
+            self.filter_key[4:]
+            if self.filter_key.startswith("cat:")
+            else app_settings.get_value("default_category")
+        )
         title, priority, category, due = parse_quick_input(
             raw,
             default_priority=Priority.from_value(app_settings.get_value("default_priority")),
-            default_category=app_settings.get_value("default_category"),
+            default_category=default_category,
         )
         if not title:
             self.toast.show_message(t("请填写任务标题"))
@@ -490,7 +499,8 @@ class MainWindow(QWidget):
         self.repo.set_completed(task_id, all(i.done for i in items))
 
     def _check_daily_congrats(self) -> None:
-        done, due = self.repo.stats()
+        # 只统计「今天到期」的那批任务，避免完成几条无关任务就误报「今天全部完成」
+        done, due = self.repo.today_progress()
         if due and done >= due:
             self.toast.show_message(
                 t("太棒了！今天的 {count} 项任务全部完成 🎉", count=due), 2600

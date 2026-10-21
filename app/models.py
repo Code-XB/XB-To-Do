@@ -153,7 +153,8 @@ class Task:
             self.note,
             int(self.priority),
             self.category,
-            self.due_date,
+            # 空串到期日在 SQL 里会被当成「早于今天」，统一落库为 NULL
+            self.due_date or None,
             int(self.completed),
             self.created_at,
             self.completed_at,

@@ -32,6 +32,7 @@ from app.main_window import MainWindow, parse_quick_input  # noqa: E402
 from app.models import ChecklistItem, Priority, Task  # noqa: E402
 from app.widgets.dialogs import InputDialog, MessageDialog  # noqa: E402
 from app.widgets.task_dialog import BlockDialog, parse_natural_date  # noqa: E402
+from app.widgets.task_item import _SubRow  # noqa: E402
 
 
 def save_dialog_shot(dialog, path: Path, bg: str = "#15161b") -> None:
@@ -254,6 +255,75 @@ def test_parsers() -> None:
         "解析英文 tomorrow",
     )
 
+    # 词组重叠：最长匹配优先，否则「大后天」会被「后天」、「day after tomorrow」
+    # 会被「tomorrow」抢先命中，结果差 1~3 天
+    today = date.today()
+    monday = today - timedelta(days=today.weekday())
+    check(
+        parse_natural_date("大后天") == (today + timedelta(days=3)).isoformat(),
+        "解析「大后天」= 今天 +3 天（不被「后天」抢占）",
+    )
+    check(
+        parse_natural_date("day after tomorrow") == (today + timedelta(days=2)).isoformat(),
+        "解析英文 day after tomorrow = 今天 +2 天",
+    )
+
+    # 周前缀偏移：下周一应该是下周一，而不是下下周一
+    check(
+        parse_natural_date("下周一") == (monday + timedelta(days=7)).isoformat(),
+        "解析「下周一」= 下周一（不再多加一周）",
+    )
+    check(
+        parse_natural_date("下周五") == (monday + timedelta(days=11)).isoformat(),
+        "解析「下周五」",
+    )
+    check(
+        parse_natural_date("本周三") == (monday + timedelta(days=2)).isoformat(),
+        "解析「本周三」= 本周三",
+    )
+    check(
+        parse_natural_date("next monday") == (monday + timedelta(days=7)).isoformat(),
+        "解析英文 next monday",
+    )
+
+
+def test_edge_cases() -> None:
+    """边界与脏数据：空到期日、LIKE 通配符转义、批量 IN 查询分块。"""
+    print("\n== 边界 ==")
+    from app import database as db_mod
+
+    tmp = Path(tempfile.mkdtemp(prefix="xbtodo_edge_"))
+    repo = TaskRepository(tmp / "edge.db")
+    try:
+        repo.add(Task(title="空日期", due_date=""))
+        check(repo.list_tasks("all")[0].due_date is None, "空到期日写入后落库为 NULL")
+        check(not repo.list_tasks("overdue"), "空到期日不会被误判为已逾期")
+        check(not repo.list_tasks("today"), "空到期日不会命中「今天到期」")
+
+        repo.add(Task(title="含_下划线", category="工作"))
+        repo.add(Task(title="普通任务", category="工作"))
+        check(len(repo.list_tasks("all", search="_")) == 1, "搜索下划线按字面匹配，不当通配符")
+        check(len(repo.list_tasks("all", search="%")) == 0, "搜索百分号按字面匹配")
+        check(len(repo.list_tasks("all", search="普通")) == 1, "普通关键字搜索仍然生效")
+
+        block = repo.add(Task(title="跨块待办", items=[
+            ChecklistItem(text="甲"), ChecklistItem(text="乙"),
+        ]))
+        # 把分块阈值压到 1，强制走多段 IN 查询
+        original = db_mod._IN_CHUNK
+        db_mod._IN_CHUNK = 1
+        try:
+            tasks = repo.list_tasks("all")
+            check(sum(t.sub_total for t in tasks) == 2, "分块 IN 查询后子项挂载完整")
+            check(
+                repo.existing_ids([block.id, 999999]) == {block.id},
+                "existing_ids 过滤掉已删除的任务 id",
+            )
+        finally:
+            db_mod._IN_CHUNK = original
+    finally:
+        repo.close()
+
 
 def test_ui(shots: bool) -> None:
     print("\n== 界面 ==")
@@ -299,6 +369,16 @@ def test_ui(shots: bool) -> None:
     check(window.page_title.text() == "分类 · 工作", "切换到分类视图")
     check(all(c.task.category == "工作" for c in window._cards), "分类视图内容正确")
 
+    # 分类视图下快速添加：没写 #分类 时应落到当前分类，否则新任务会立刻从列表里消失
+    window.quick_edit.setText("分类视图快速添加")
+    window._on_quick_add()
+    app.processEvents()
+    added = repo.list_tasks("all", search="分类视图快速添加")
+    check(bool(added) and added[0].category == "工作", "分类视图内快速添加默认落到当前分类")
+    check(any(c.task.title == "分类视图快速添加" for c in window._cards), "新任务立刻出现在当前视图")
+    for task in added:
+        repo.delete(task.id)
+
     window._on_filter_changed("all")
     app.processEvents()
 
@@ -315,6 +395,30 @@ def test_ui(shots: bool) -> None:
     app.processEvents()
     card = next(c for c in window._cards if c.task.id == block_id)
     check(card.sub_input is not None, "展开后渲染出子项输入框")
+
+    # 走真实 QCheckBox 信号链：勾第 3 条时必须只改第 3 条
+    # （这里曾是 lambda 参数错位，勾任何一条都会写到 id=1 的子项上）
+    before = {i.id: i.done for i in repo.items_of(block_id)}
+    rows = card.findChildren(_SubRow)
+    check([r.item.id for r in rows] == list(before), "子项行按 position 顺序渲染")
+    last_row = rows[-1]
+    target_id = last_row.item.id
+    last_row.check.setChecked(True)
+    for _ in range(3):
+        app.processEvents()
+    after = {i.id: i.done for i in repo.items_of(block_id)}
+    check(after[target_id] and not before[target_id], "点真实子项勾选框 -> 该子项被标记完成")
+    check(
+        [k for k in before if before[k] != after[k]] == [target_id],
+        "勾选只影响被点的那一条，不会写到别的子项上",
+    )
+
+    card = next(c for c in window._cards if c.task.id == block_id)
+    row = next(r for r in card.findChildren(_SubRow) if r.item.id == target_id)
+    row.check.setChecked(False)
+    for _ in range(3):
+        app.processEvents()
+    check(repo.get_item(target_id).done is False, "取消勾选真实子项 -> 正确写回未完成")
 
     # 行内新增子项
     window._on_item_added(block_id, "行内新增的子项")
@@ -490,6 +594,7 @@ def main() -> int:
     test_repository()
     test_project_files()
     test_parsers()
+    test_edge_cases()
     test_ui(args.shots)
     print("\n全部检查通过 ✅")
     return 0
